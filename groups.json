@@ -1,0 +1,54 @@
+{
+  "groups": {
+    "card_existence": {
+      "card_present": {
+        "key": "1",
+        "front": false
+      },
+      "card_not_present": {
+        "key": "2",
+        "front": false
+      }
+    },
+    "orientation": {
+      "0": {
+        "key": "1",
+        "front": false
+      },
+      "90": {
+        "key": "2",
+        "front": false
+      },
+      "180": {
+        "key": "3",
+        "front": false
+      },
+      "270": {
+        "key": "4",
+        "front": false
+      }
+    },
+    "card_type": {
+      "new_front": {
+        "key": "1",
+        "front": false
+      },
+      "new_back": {
+        "key": "2",
+        "front": false
+      },
+      "new_back_and_front": {
+        "key": "3",
+        "front": false
+      },
+      "old_back": {
+        "key": "4",
+        "front": false
+      },
+      "old_front": {
+        "key": "5",
+        "front": false
+      }
+    }
+  }
+}
