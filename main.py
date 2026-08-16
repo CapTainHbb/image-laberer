@@ -90,14 +90,15 @@ def disp_dims(lb_w, lb_h, rot):
     return lb_w, lb_h
 
 
-def norm_to_disp(nx, ny, rot, lb_w, lb_h, ow, oh):
+def norm_to_disp(nx, ny, rot, lb_w, lb_h, ow, oh, scale=1.0):
     lx = nx * lb_w
     ly = ny * lb_h
-    return lb_to_disp(lx, ly, rot, lb_w, lb_h)
+    dx, dy = lb_to_disp(lx, ly, rot, lb_w, lb_h)
+    return dx * scale, dy * scale
 
 
-def disp_to_norm(x, y, rot, lb_w, lb_h, ow, oh):
-    lx, ly = disp_to_lb(x, y, rot, lb_w, lb_h)
+def disp_to_norm(x, y, rot, lb_w, lb_h, ow, oh, scale=1.0):
+    lx, ly = disp_to_lb(x / scale, y / scale, rot, lb_w, lb_h)
     ox = lx / lb_w * ow
     oy = ly / lb_h * oh
     return max(0.0, min(1.0, ox / ow)), max(0.0, min(1.0, oy / oh))
@@ -505,6 +506,7 @@ class LabelerApp:
         tk.Button(toolbar, text="Undo (u)", command=self.undo).pack(side=tk.LEFT, padx=2)
         if self.mode == "yolo":
             tk.Button(toolbar, text="Close Polygon (c)", command=self.close_polygon).pack(side=tk.LEFT, padx=2)
+            tk.Button(toolbar, text="Whole Image (w)", command=self.annotate_whole_image).pack(side=tk.LEFT, padx=2)
             tk.Button(toolbar, text="Save & Next (Enter)", command=self.save_next).pack(side=tk.LEFT, padx=2)
         tk.Button(toolbar, text="Next Unlabeled (n)", command=self.next_unlabeled).pack(side=tk.LEFT, padx=2)
         tk.Button(toolbar, text="Quit (q)", command=self.quit).pack(side=tk.RIGHT, padx=2)
@@ -565,6 +567,7 @@ class LabelerApp:
         if self.mode == "yolo":
             self.root.bind("<Return>", lambda e: self.save_next())
             self.root.bind("c", lambda e: self.close_polygon())
+            self.root.bind("w", lambda e: self.annotate_whole_image())
             self.root.bind("<BackSpace>", lambda e: self.backspace_vertex())
             self.root.bind("<Escape>", lambda e: self.cancel_polygon())
         else:
@@ -574,7 +577,8 @@ class LabelerApp:
         parts = [f"[{key}] {self.keymap[key]}" for key in sorted(self.keymap)]
         parts.append("←/→: prev/next")
         if self.mode == "yolo":
-            parts.append("left: add point  right/click 1st point/c: close  Bksp: remove  Esc: cancel  Enter: save&next")
+            parts.append("left: add point  right/click 1st point/c: close  w: whole image  "
+                         "Bksp: remove  Esc: cancel  Enter: save&next")
         return "  ".join(parts)
 
     def _show_current(self):
@@ -664,25 +668,35 @@ class LabelerApp:
         cw, ch = c.winfo_width(), c.winfo_height()
         if cw <= 1 or ch <= 1:
             return
-        iw, ih = self._base_photo.width(), self._base_photo.height()
+        dw, dh = disp_dims(self.lb_w, self.lb_h, self.rot)
+        self._disp_scale = min(1.0, cw / dw, ch / dh)
+        sw, sh = max(1, round(dw * self._disp_scale)), max(1, round(dh * self._disp_scale))
+        if self._disp_scale < 1.0:
+            img = Image.fromarray(self._base_bgr).resize((sw, sh), Image.LANCZOS)
+            self._photo = ImageTk.PhotoImage(img)
+        else:
+            self._photo = self._base_photo
+        iw, ih = self._photo.width(), self._photo.height()
         x0 = (cw - iw) // 2
         y0 = (ch - ih) // 2
         if self._img_item is None:
-            self._img_item = c.create_image(0, 0, anchor="nw", image=self._base_photo)
+            self._img_item = c.create_image(0, 0, anchor="nw", image=self._photo)
         else:
-            c.itemconfig(self._img_item, image=self._base_photo)
+            c.itemconfig(self._img_item, image=self._photo)
         c.coords(self._img_item, x0, y0)
         c.tag_lower(self._img_item)
         if self.mode != "yolo":
             return
+        scale = self._disp_scale
         lb_w, lb_h = self.lb_w, self.lb_h
         ow, oh = self._orig_dims
         for idx, poly in enumerate(self.polygons):
             color = COLORS[idx % len(COLORS)]
             tk_color = "#%02x%02x%02x" % (color[2], color[1], color[0])
             pts = [(x0 + dx, y0 + dy) for dx, dy in (
-                norm_to_disp(nx, ny, self.rot, lb_w, lb_h, ow, oh) for nx, ny in poly["pts"])]
-            c.create_polygon(pts, outline=tk_color, width=2, fill=tk_color, stipple="gray50", tags="overlay")
+                norm_to_disp(nx, ny, self.rot, lb_w, lb_h, ow, oh, scale) for nx, ny in poly["pts"])]
+            fill = "" if poly.get("whole") else tk_color
+            c.create_polygon(pts, outline=tk_color, width=2, fill=fill, stipple="gray50", tags="overlay")
             if pts:
                 c.create_text(pts[0][0] + 8, pts[0][1] + 8, text=poly["cls"], fill=tk_color,
                               anchor="nw", font=("TkDefaultFont", 10, "bold"), tags="overlay")
@@ -690,7 +704,7 @@ class LabelerApp:
             color = COLORS[self.classes.index(self.current_cls) % len(COLORS)] if self.current_cls else (255, 255, 255)
             tk_color = "#%02x%02x%02x" % (color[2], color[1], color[0])
             pts = [(x0 + dx, y0 + dy) for dx, dy in (
-                norm_to_disp(nx, ny, self.rot, lb_w, lb_h, ow, oh) for nx, ny in self.current)]
+                norm_to_disp(nx, ny, self.rot, lb_w, lb_h, ow, oh, scale) for nx, ny in self.current)]
             for (px, py) in pts:
                 c.create_oval(px - 4, py - 4, px + 4, py + 4, fill=tk_color, outline="", tags="overlay")
             if self.mouse_pos:
@@ -710,7 +724,8 @@ class LabelerApp:
         x = event.x - x0
         y = event.y - y0
         dw, dh = disp_dims(self.lb_w, self.lb_h, self.rot)
-        if x < 0 or y < 0 or x > dw - 1 or y > dh - 1:
+        sw, sh = round(dw * self._disp_scale), round(dh * self._disp_scale)
+        if x < 0 or y < 0 or x > sw - 1 or y > sh - 1:
             return None
         return x, y
 
@@ -718,13 +733,14 @@ class LabelerApp:
         p = self._event_to_disp(event)
         if p is None or self.current_cls is None:
             return
+        scale = self._disp_scale
         if len(self.current) >= 3:
             fx, fy = norm_to_disp(self.current[0][0], self.current[0][1], self.rot,
-                                  self.lb_w, self.lb_h, *self._orig_dims)
+                                  self.lb_w, self.lb_h, *self._orig_dims, scale)
             if (p[0] - fx) ** 2 + (p[1] - fy) ** 2 <= 10 * 10:
                 self.close_polygon()
                 return
-        nx, ny = disp_to_norm(p[0], p[1], self.rot, self.lb_w, self.lb_h, *self._orig_dims)
+        nx, ny = disp_to_norm(p[0], p[1], self.rot, self.lb_w, self.lb_h, *self._orig_dims, scale)
         self.current.append((nx, ny))
         self.mouse_pos = p
         self._redraw_overlay()
@@ -757,6 +773,17 @@ class LabelerApp:
             self.mouse_pos = None
             self._redraw_overlay()
 
+    def annotate_whole_image(self):
+        if self.mode != "yolo" or self.img is None:
+            return
+        if self.current_cls is None:
+            return
+        self.current = []
+        self.mouse_pos = None
+        self.polygons.append({"cls": self.current_cls, "whole": True,
+                              "pts": [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]})
+        self._redraw_overlay()
+
     def save_next(self):
         if self.i >= len(self.files):
             return
@@ -778,6 +805,9 @@ class LabelerApp:
             cid = self.classes.index(poly["cls"])
             coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in poly["pts"])
             lines.append(f"{cid} {coords}")
+        if not lines and self.current_cls is not None:
+            cid = self.classes.index(self.current_cls)
+            lines.append(str(cid))
         txt.write_text("\n".join(lines) + ("\n" if lines else ""))
         return txt
 
