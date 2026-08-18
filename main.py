@@ -1,12 +1,14 @@
 import json
+import math
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import cv2
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 CONFIG_PATH = Path(__file__).parent / "groups.json"
@@ -115,6 +117,92 @@ COLORS = [
     (255, 255, 0),
 ]
 
+UI = {
+    "bg": "#1b1d21",
+    "panel": "#24262b",
+    "button": "#33373f",
+    "button_hover": "#3e434d",
+    "button_active": "#24262b",
+    "button_text": "#e8eaed",
+    "text": "#e8eaed",
+    "muted": "#9aa1a9",
+    "accent": "#3d7bfd",
+    "accent_hover": "#5290ff",
+    "accent_text": "#ffffff",
+    "field": "#15171a",
+    "border": "#0e0f12",
+    "canvas": "#0e0f11",
+    "tip_bg": "#2c2f36",
+    "tip_fg": "#e8eaed",
+    "tip_border": "#4a4f59",
+    "warning": "#e0a13d",
+    "accent_pressed": "#3267d0",
+    "danger": "#e5484d",
+    "danger_hover": "#ef6267",
+    "danger_pressed": "#c23a40",
+    "danger_text": "#ffffff",
+}
+
+
+def rounded_photo(w, h, radius, fill, border=None, border_w=1, ss=2):
+    """Render a rounded-rect PNG at 2x supersampling for crisp edges."""
+    W, H = w * ss, h * ss
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=radius * ss,
+                        fill=fill, outline=border, width=border_w * ss)
+    return ImageTk.PhotoImage(img.resize((w, h), Image.Resampling.LANCZOS))
+
+
+def theme_tree(widget):
+    cls = widget.winfo_class()
+    if cls in ("Frame", "Toplevel", "Tk", "LabelFrame"):
+        widget.configure(bg=UI["bg"])
+    elif cls == "Label":
+        widget.configure(bg=UI["bg"], fg=UI["text"])
+    elif cls == "Button":
+        widget.configure(bg=UI["button"], fg=UI["button_text"],
+                         activebackground=UI["button_hover"], activeforeground=UI["button_text"],
+                         relief=tk.FLAT, bd=0, highlightthickness=1,
+                         highlightbackground=UI["border"], highlightcolor=UI["accent"],
+                         padx=7, pady=2, cursor="hand2")
+    elif cls in ("Entry", "Spinbox"):
+        widget.configure(bg=UI["field"], fg=UI["text"], insertbackground=UI["text"],
+                         relief=tk.FLAT, highlightthickness=1, highlightbackground=UI["border"],
+                         highlightcolor=UI["accent"])
+    elif cls == "Listbox":
+        widget.configure(bg=UI["field"], fg=UI["text"], relief=tk.FLAT, bd=0,
+                         highlightthickness=1, highlightbackground=UI["border"],
+                         highlightcolor=UI["border"], selectbackground=UI["accent"],
+                         selectforeground=UI["accent_text"], activestyle="none")
+    elif cls == "Checkbutton":
+        widget.configure(bg=UI["bg"], fg=UI["text"], activebackground=UI["bg"],
+                         activeforeground=UI["text"], selectcolor=UI["field"],
+                         highlightthickness=0, bd=0, cursor="hand2")
+    for child in widget.winfo_children():
+        theme_tree(child)
+
+
+def setup_ttk(root):
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure("TCombobox", fieldbackground=UI["field"], background=UI["button"],
+                    foreground=UI["text"], arrowcolor=UI["text"],
+                    bordercolor=UI["border"], lightcolor=UI["border"], darkcolor=UI["border"])
+    style.map("TCombobox",
+              fieldbackground=[("readonly", UI["field"])],
+              foreground=[("readonly", UI["text"])],
+              background=[("readonly", UI["button"]), ("active", UI["button_hover"])],
+              selectbackground=[("readonly", UI["field"])],
+              selectforeground=[("readonly", UI["text"])])
+    root.option_add("*TCombobox*Listbox.background", UI["field"])
+    root.option_add("*TCombobox*Listbox.foreground", UI["text"])
+    root.option_add("*TCombobox*Listbox.selectBackground", UI["accent"])
+    root.option_add("*TCombobox*Listbox.selectForeground", UI["accent_text"])
+
 
 class AddClassDialog(tk.Toplevel):
     def __init__(self, parent, used_keys):
@@ -143,14 +231,17 @@ class AddClassDialog(tk.Toplevel):
 
         btns = tk.Frame(frame)
         btns.grid(row=3, column=0, columnspan=2, pady=(8, 0))
-        tk.Button(btns, text="Add", width=10, command=self._ok).pack(side=tk.LEFT, padx=4)
-        tk.Button(btns, text="Cancel", width=10, command=self.destroy).pack(side=tk.LEFT, padx=4)
+        ModernButton(btns, text="Add", style="accent", width=100,
+                     command=self._ok).pack(side=tk.LEFT, padx=4)
+        ModernButton(btns, text="Cancel", width=100,
+                     command=self.destroy).pack(side=tk.LEFT, padx=4)
 
         self.bind("<Return>", lambda e: self._ok())
         self.bind("<Escape>", lambda e: self.destroy())
         self.name_entry.focus_set()
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+        theme_tree(self)
 
     def _next_key(self):
         for k in KEYS:
@@ -171,6 +262,417 @@ class AddClassDialog(tk.Toplevel):
         self.destroy()
 
 
+class ToolTip:
+    def __init__(self, widget, text, delay_ms=400):
+        self.widget = widget
+        self.text = text
+        self._tip = None
+        self._after_show = None
+        self._after_hide = None
+        widget.bind("<Enter>", self._enter, add="+")
+        widget.bind("<Leave>", self._leave, add="+")
+        widget.bind("<ButtonPress>", self._leave, add="+")
+        widget.bind("<FocusOut>", self._leave, add="+")
+        widget.bind("<Unmap>", self._leave, add="+")
+        widget.bind("<Destroy>", self._destroyed, add="+")
+        self._delay_ms = delay_ms
+
+    def _enter(self, event=None):
+        self._cancel_all()
+        self._after_show = self.widget.after(self._delay_ms, self._show)
+
+    def _leave(self, event=None):
+        self._cancel_all()
+        self._hide()
+
+    def _cancel_all(self):
+        for name in ("_after_show", "_after_hide"):
+            aid = getattr(self, name, None)
+            if aid is not None:
+                try:
+                    self.widget.after_cancel(aid)
+                except tk.TclError:
+                    pass
+                setattr(self, name, None)
+
+    def _show(self):
+        self._after_show = None
+        if self._tip is not None or not self.text:
+            return
+        w = self.widget
+        try:
+            if not w.winfo_exists():
+                return
+            x = w.winfo_rootx() + w.winfo_width() // 2
+            y = w.winfo_rooty() + w.winfo_height() + 6
+            tip = tk.Toplevel(w)
+        except tk.TclError:
+            return
+        tip.wm_overrideredirect(True)
+        tip.attributes("-topmost", True)
+        tip.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(tip, text=self.text, bg=UI["tip_bg"], fg=UI["tip_fg"],
+                         relief=tk.FLAT, bd=0, highlightthickness=1,
+                         highlightbackground=UI["tip_border"],
+                         padx=9, pady=4, font=("TkDefaultFont", 9))
+        label.pack()
+        self._tip = tip
+        tip.bind("<Enter>", self._leave, add="+")
+        tip.bind("<Leave>", self._leave, add="+")
+        tip.bind("<ButtonPress>", self._leave, add="+")
+        self._after_hide = self.widget.after(2500, self._hide)
+
+    def _hide(self, event=None):
+        self._cancel_all()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
+
+    def _destroyed(self, event=None):
+        self._cancel_all()
+        self._hide()
+
+
+def _icon_groups(d, s, c):
+    k = s / 24.0
+    for x in (1, 13):
+        for y in (1, 13):
+            d.rounded_rectangle([x * k, y * k, (x + 10) * k, (y + 10) * k],
+                                radius=3 * k, fill=c)
+
+
+def _icon_prev(d, s, c):
+    k = s / 24.0
+    d.rectangle([2 * k, 6 * k, 4 * k, 18 * k], fill=c)
+    d.polygon([(8 * k, 12 * k), (18 * k, 4 * k), (18 * k, 20 * k)], fill=c)
+
+
+def _icon_next(d, s, c):
+    k = s / 24.0
+    d.rectangle([20 * k, 6 * k, 22 * k, 18 * k], fill=c)
+    d.polygon([(16 * k, 12 * k), (6 * k, 4 * k), (6 * k, 20 * k)], fill=c)
+
+
+def _icon_rotate(d, s, c):
+    cx = cy = s / 2.0
+    r = s / 2.0 - 3 * s / 24.0
+    w = max(2, int(2.2 * s / 24.0))
+    d.arc([cx - r, cy - r, cx + r, cy + r], start=250, end=430, fill=c, width=w)
+    t1 = math.radians(70)
+    px = cx + r * math.cos(t1)
+    py = cy + r * math.sin(t1)
+    tx, ty = -math.sin(t1), math.cos(t1)
+    nx, ny = -math.cos(t1), -math.sin(t1)
+    h = 7 * s / 24.0
+    d.polygon([(px + tx * h, py + ty * h),
+               (px - tx * h * 0.4 + nx * h * 0.5, py - ty * h * 0.4 + ny * h * 0.5),
+               (px - tx * h * 0.4 - nx * h * 0.5, py - ty * h * 0.4 - ny * h * 0.5)], fill=c)
+
+
+def _icon_skip(d, s, c):
+    k = s / 24.0
+    d.polygon([(8 * k, 12 * k), (4 * k, 4 * k), (4 * k, 20 * k)], fill=c)
+    d.polygon([(17 * k, 12 * k), (13 * k, 4 * k), (13 * k, 20 * k)], fill=c)
+
+
+def _icon_undo(d, s, c):
+    cx = cy = s / 2.0
+    r = s / 2.0 - 4 * s / 24.0
+    w = max(2, int(2.2 * s / 24.0))
+    d.arc([cx - r, cy - 3 * s / 24.0, cx + r, cy + 3 * s / 24.0],
+          start=0, end=180, fill=c, width=w)
+    d.polygon([(cx - r - 7 * s / 24.0, cy), (cx - r - 2 * s / 24.0, cy - 4 * s / 24.0),
+               (cx - r - 2 * s / 24.0, cy + 4 * s / 24.0)], fill=c)
+
+
+def _icon_polygon(d, s, c):
+    k = s / 24.0
+    d.polygon([(12 * k, 2 * k), (20 * k, 7 * k), (17 * k, 19 * k),
+               (7 * k, 19 * k), (4 * k, 7 * k)],
+              outline=c, width=max(2, int(2.2 * k)))
+
+
+def _icon_whole(d, s, c):
+    k = s / 24.0
+    d.rounded_rectangle([2 * k, 3 * k, 22 * k, 21 * k], radius=2 * k,
+                        outline=c, width=max(2, int(2.2 * k)))
+    d.line([(5 * k, 14 * k), (9 * k, 9 * k), (12 * k, 12 * k), (16 * k, 7 * k)],
+           fill=c, width=max(2, int(2.2 * k)))
+
+
+def _icon_rect(d, s, c):
+    k = s / 24.0
+    d.rounded_rectangle([2 * k, 2 * k, 22 * k, 22 * k], radius=1.5 * k,
+                        outline=c, width=max(2, int(2.2 * k)))
+
+
+def _icon_save(d, s, c):
+    k = s / 24.0
+    d.rounded_rectangle([2 * k, 2 * k, 22 * k, 22 * k], radius=2 * k,
+                        outline=c, width=max(2, int(2.2 * k)))
+    d.rectangle([7 * k, 2 * k, 17 * k, 9 * k], fill=c)
+    d.rectangle([7 * k, 13 * k, 17 * k, 22 * k], fill=c)
+
+
+def _icon_zoom_reset(d, s, c):
+    k = s / 24.0
+    w = max(2, int(2.2 * k))
+    d.ellipse([3 * k, 3 * k, 12 * k, 12 * k], outline=c, width=w)
+    d.line([11 * k, 11 * k, 18 * k, 18 * k], fill=c, width=w)
+    d.line([5 * k, 7.5 * k, 10 * k, 7.5 * k], fill=c, width=w)
+
+
+def _icon_next_unlabeled(d, s, c):
+    k = s / 24.0
+    d.polygon([(13 * k, 12 * k), (5 * k, 4 * k), (5 * k, 20 * k)], fill=c)
+    d.ellipse([17 * k, 3 * k, 23 * k, 9 * k], fill=c)
+
+
+def _icon_quit(d, s, c):
+    k = s / 24.0
+    w = max(2, int(2.4 * k))
+    d.ellipse([4 * k, 4 * k, 20 * k, 20 * k], outline=c, width=w)
+    d.rectangle([11 * k, 1 * k, 13 * k, 8 * k], fill=c)
+
+
+ICON_DRAWS = {
+    "groups": _icon_groups,
+    "prev": _icon_prev,
+    "next": _icon_next,
+    "rotate": _icon_rotate,
+    "skip": _icon_skip,
+    "undo": _icon_undo,
+    "polygon": _icon_polygon,
+    "whole": _icon_whole,
+    "rect": _icon_rect,
+    "save": _icon_save,
+    "zoom_reset": _icon_zoom_reset,
+    "next_unlabeled": _icon_next_unlabeled,
+    "quit": _icon_quit,
+}
+
+
+def build_icons(sample_widget, pixel_size=20, icon_color=None):
+    try:
+        r, g, b = sample_widget.winfo_rgb(sample_widget.cget("bg"))
+        dark = (r + g + b) / 3 > 0x7FFF
+    except tk.TclError:
+        dark = True
+    main = icon_color or ((230, 233, 237) if dark else (58, 62, 68))
+    icons = {}
+    ss = pixel_size * 2
+    for name, draw in ICON_DRAWS.items():
+        layer = Image.new("RGBA", (ss, ss), (0, 0, 0, 0))
+        draw(ImageDraw.Draw(layer), ss, main)
+        r, g, b, a = layer.split()
+        shade = Image.new("L", layer.size, 0)
+        shadow = Image.merge("RGBA", (shade, shade, shade, a)).transform(
+            layer.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, 1),
+            resample=Image.Resampling.NEAREST)
+        img = Image.alpha_composite(shadow, layer)
+        img = img.resize((pixel_size, pixel_size), Image.Resampling.LANCZOS)
+        icons[name] = ImageTk.PhotoImage(img)
+    return icons
+
+
+class ModernButton(tk.Canvas):
+    """Canvas-based rounded button with hover / pressed / active states."""
+
+    _STYLES = {
+        "default": {"bg": "button", "hover": "button_hover", "pressed": "button_active"},
+        "accent": {"bg": "accent", "hover": "accent_hover", "pressed": "accent_pressed"},
+        "danger": {"bg": "danger", "hover": "danger_hover", "pressed": "danger_pressed"},
+    }
+
+    def __init__(self, parent, command=None, text="", icon=None, icon_active=None,
+                 badge=None, width=None, height=34, radius=10, tooltip=None,
+                 style="default", font_size=10, parent_bg=None):
+        bg = parent_bg or UI["bg"]
+        self._command = command
+        self._text = text
+        self._icon = icon
+        self._icon_active = icon_active
+        self._badge = str(badge) if badge is not None else None
+        self._style = style
+        self._active = False
+        self._hover = False
+        self._pressed = False
+
+        base = tkfont.nametofont("TkDefaultFont")
+        fam = base.actual("family")
+        sz = base.actual("size")
+        self._font = tkfont.Font(family=fam, size=font_size)
+        self._badge_font = tkfont.Font(family=fam, size=sz - 1, weight="bold")
+
+        padx = 14
+        icon_w = 20 if icon is not None else 0
+        gap = 7 if (icon is not None and (text or self._badge)) else 0
+        tw = self._font.measure(text) if text else 0
+        bw = self._badge_font.measure(self._badge) + 16 if self._badge else 0
+        gapb = 9 if (self._badge and (text or icon)) else 0
+        self._content_w = icon_w + gap + tw + gapb + bw
+        if icon is not None and not text and not self._badge:
+            w = height
+        else:
+            w = width or max(height, int(padx * 2 + self._content_w) + 4)
+
+        super().__init__(parent, width=w, height=height, bg=bg,
+                         highlightthickness=0, bd=0, cursor="hand2")
+        self._h = height
+        self._radius = min(radius, height // 2)
+        self._bg_id = self.create_image(0, 0, anchor="nw")
+        self._icon_id = self._text_id = None
+        self._chip_photo = None
+        self._icon_off = 0.0
+        self._text_off = 0.0
+        self._chip_off = 0.0
+        self._chip_h = 0
+        self._chip_w = 0
+
+        off = 0.0
+        if icon is not None:
+            self._icon_id = self.create_image(0, height / 2)
+            self._icon_off = off + icon_w / 2
+            off += icon_w + gap
+        if text:
+            self._text_id = self.create_text(0, height / 2, text=text, font=self._font)
+            self._text_off = off + tw / 2
+            off += tw + gapb
+        if self._badge:
+            self._chip_h = height - 10
+            self._chip_w = bw
+            self._chip_off = off + bw / 2
+            self._chip_photo = rounded_photo(bw, self._chip_h, self._chip_h // 2, UI["accent"])
+            self.create_image(0, height / 2, image=self._chip_photo, tags="chip")
+            self.create_text(0, height / 2, text=self._badge,
+                             fill=UI["accent_text"], font=self._badge_font, tags="chip")
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Configure>", self._on_configure)
+        if tooltip:
+            ToolTip(self, tooltip)
+        self._bw = w
+        self._layout()
+        self._refresh()
+
+    def set_active(self, active):
+        self._active = bool(active)
+        self._refresh()
+
+    def _layout(self):
+        left = (self._bw - self._content_w) / 2
+        if self._icon_id is not None:
+            self.coords(self._icon_id, left + self._icon_off, self._h / 2)
+        if self._text_id is not None:
+            self.coords(self._text_id, left + self._text_off, self._h / 2)
+        if self._chip_photo is not None:
+            self.coords("chip", left + self._chip_off, self._h / 2)
+
+    def _on_configure(self, e):
+        if e.width > 0 and e.width != self._bw:
+            self._bw = e.width
+            self._layout()
+            self._refresh()
+
+    def _palette(self):
+        if self._active:
+            if self._style == "default":
+                return (UI["accent"], UI["accent_hover"], UI["accent_pressed"],
+                        UI["accent_text"], self._icon_active or self._icon)
+            s = self._style
+            return UI[s], UI[s + "_hover"], UI[s + "_pressed"], UI[s + "_text"], self._icon
+        if self._style == "default":
+            return (UI["button"], UI["button_hover"], UI["button_active"],
+                    UI["button_text"], self._icon)
+        s = self._style
+        return UI[s], UI[s + "_hover"], UI[s + "_pressed"], UI[s + "_text"], self._icon
+
+    def _refresh(self):
+        if self._pressed:
+            variant = "pressed"
+        elif self._hover:
+            variant = "hover"
+        else:
+            variant = "bg"
+        bg, hover, pressed, text, icon = self._palette()
+        fill = {"bg": bg, "hover": hover, "pressed": pressed}[variant]
+        border = UI["accent"] if (self._active and self._style == "default") else UI["border"]
+        self._photo = rounded_photo(self._bw, self._h, self._radius, fill, border=border)
+        self.itemconfig(self._bg_id, image=self._photo)
+        if self._icon_id is not None:
+            self.itemconfig(self._icon_id, image=icon)
+        if self._text_id is not None:
+            self.itemconfig(self._text_id, fill=text)
+
+    def _on_enter(self, e):
+        self._hover = True
+        self._refresh()
+
+    def _on_leave(self, e):
+        self._hover = False
+        self._pressed = False
+        self._refresh()
+
+    def _on_press(self, e):
+        self._pressed = True
+        self._refresh()
+
+    def _on_release(self, e):
+        was = self._pressed
+        self._pressed = False
+        self._refresh()
+        if was and self._command:
+            self._command()
+
+
+class Pill(tk.Canvas):
+    """Small rounded chip label (mode / group badges)."""
+
+    def __init__(self, parent, text, fill=UI["accent"], fg=UI["accent_text"],
+                 parent_bg=None, font_size=9, padx=10, height=20):
+        bg = parent_bg or UI["bg"]
+        base = tkfont.nametofont("TkDefaultFont")
+        fam = base.actual("family")
+        f = tkfont.Font(family=fam, size=font_size, weight="bold")
+        w = padx * 2 + f.measure(text) + 2
+        super().__init__(parent, width=w, height=height, bg=bg, highlightthickness=0, bd=0)
+        self._photo = rounded_photo(w, height, height // 2, fill)
+        self.create_image(0, 0, anchor="nw", image=self._photo)
+        self.create_text(w // 2, height // 2, text=text, fill=fg, font=f)
+
+
+class ProgressBar(tk.Canvas):
+    def __init__(self, parent, width=220, height=10, radius=5, parent_bg=None):
+        bg = parent_bg or UI["bg"]
+        super().__init__(parent, width=width, height=height, bg=bg, highlightthickness=0, bd=0)
+        self._pw, self._h, self._r = width, height, radius
+        self._track = rounded_photo(width, height, radius, UI["field"],
+                                    border=UI["border"], border_w=1)
+        self.create_image(0, 0, anchor="nw", image=self._track)
+        self._fill = None
+        self._fill_id = None
+        self._value = -1.0
+        self.set(0.0)
+
+    def set(self, value):
+        value = max(0.0, min(1.0, value))
+        if abs(value - self._value) < 0.005:
+            return
+        self._value = value
+        fw = max(4, round(self._pw * value))
+        self._fill = rounded_photo(fw, self._h, self._r, UI["accent"])
+        if self._fill_id is None:
+            self._fill_id = self.create_image(0, 0, anchor="nw", image=self._fill)
+        else:
+            self.itemconfig(self._fill_id, image=self._fill)
+
+
 class SetupDialog(tk.Frame):
     def __init__(self, root, config, on_start, on_quit):
         super().__init__(root, padx=14, pady=14)
@@ -187,6 +689,8 @@ class SetupDialog(tk.Frame):
         self.input_entry.bind("<KeyRelease>", lambda e: self._update_label_detection())
         self.output_entry.bind("<KeyRelease>", lambda e: self._update_label_detection())
         self._update_label_detection()
+        theme_tree(self)
+        self.hint_label.configure(fg=UI["warning"])
 
     def _build(self):
         tk.Label(self, text="Input folder (unlabeled images):").grid(row=0, column=0, sticky=tk.W)
@@ -195,7 +699,8 @@ class SetupDialog(tk.Frame):
         self.input_var = tk.StringVar()
         self.input_entry = tk.Entry(row, textvariable=self.input_var, width=44)
         self.input_entry.pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(row, text="Browse...", command=lambda: self._browse(self.input_var)).pack(side=tk.LEFT)
+        ModernButton(row, text="Browse...",
+                     command=lambda: self._browse(self.input_var)).pack(side=tk.LEFT)
 
         tk.Label(self, text="Output folder (labels are saved here):").grid(row=2, column=0, sticky=tk.W)
         row2 = tk.Frame(self)
@@ -203,7 +708,8 @@ class SetupDialog(tk.Frame):
         self.output_var = tk.StringVar()
         self.output_entry = tk.Entry(row2, textvariable=self.output_var, width=44)
         self.output_entry.pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(row2, text="Browse...", command=lambda: self._browse(self.output_var)).pack(side=tk.LEFT)
+        ModernButton(row2, text="Browse...",
+                     command=lambda: self._browse(self.output_var)).pack(side=tk.LEFT)
 
         tk.Label(self, text="Group:").grid(row=4, column=0, sticky=tk.W)
         gframe = tk.Frame(self)
@@ -211,7 +717,8 @@ class SetupDialog(tk.Frame):
         self.group_var = tk.StringVar()
         self.group_combo = ttk.Combobox(gframe, textvariable=self.group_var, state="readonly", width=42)
         self.group_combo.pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(gframe, text="Manage Groups...", command=self.manage_groups).pack(side=tk.LEFT)
+        ModernButton(gframe, text="Manage Groups...",
+                     command=self.manage_groups).pack(side=tk.LEFT)
 
         tk.Label(self, text="Mode:").grid(row=6, column=0, sticky=tk.W)
         mframe = tk.Frame(self)
@@ -221,14 +728,17 @@ class SetupDialog(tk.Frame):
                                        values=("classification", "yolo"), width=42)
         self.mode_combo.pack(side=tk.LEFT, padx=(0, 6))
 
-        self.hint_label = tk.Label(self, text="", fg="#b25c00", justify=tk.LEFT, anchor=tk.W,
+        self.hint_label = tk.Label(self, text="", fg=UI["warning"], justify=tk.LEFT, anchor=tk.W,
                                    wraplength=480)
         self.hint_label.grid(row=8, column=0, sticky=tk.W, pady=(2, 6))
 
         btns = tk.Frame(self)
         btns.grid(row=9, column=0, pady=(12, 0))
-        tk.Button(btns, text="Start Labeling", width=16, command=self._start).pack(side=tk.LEFT, padx=4)
-        tk.Button(btns, text="Quit", width=10, command=self.on_quit).pack(side=tk.LEFT, padx=4)
+        self.start_btn = ModernButton(btns, text="Start Labeling", style="accent",
+                                      width=150, command=self._start)
+        self.start_btn.pack(side=tk.LEFT, padx=4)
+        ModernButton(btns, text="Quit", style="danger", width=100,
+                     command=self.on_quit).pack(side=tk.LEFT, padx=4)
 
     def refresh_groups(self):
         self.group_combo["values"] = list(self.groups)
@@ -277,7 +787,7 @@ class SetupDialog(tk.Frame):
             self.hint_label.configure(
                 text=f"Detected {n} existing label file(s) in the output folder matching your images. "
                      f"{mode_note}",
-                fg="#b25c00")
+                 fg=UI["warning"])
         else:
             self.hint_label.configure(text="")
 
@@ -324,6 +834,7 @@ class GroupManager(tk.Toplevel):
         self._build()
         self.refresh()
         self.grab_set()
+        theme_tree(self)
 
     def _build(self):
         left = tk.Frame(self)
@@ -334,8 +845,8 @@ class GroupManager(tk.Toplevel):
         self.group_list.bind("<<ListboxSelect>>", lambda e: self.refresh_classes())
         gbtns = tk.Frame(left)
         gbtns.pack(fill=tk.X, pady=4)
-        tk.Button(gbtns, text="New Group", width=12, command=self.new_group).pack(side=tk.LEFT, padx=2)
-        tk.Button(gbtns, text="Delete Group", width=12, command=self.delete_group).pack(side=tk.LEFT, padx=2)
+        ModernButton(gbtns, text="New Group", width=110, command=self.new_group).pack(side=tk.LEFT, padx=2)
+        ModernButton(gbtns, text="Delete Group", width=110, command=self.delete_group).pack(side=tk.LEFT, padx=2)
 
         right = tk.Frame(self)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 12), pady=12)
@@ -344,8 +855,8 @@ class GroupManager(tk.Toplevel):
         self.class_list.pack(fill=tk.BOTH, expand=True)
         cbtns = tk.Frame(right)
         cbtns.pack(fill=tk.X, pady=4)
-        tk.Button(cbtns, text="Add Class", width=12, command=self.add_class).pack(side=tk.LEFT, padx=2)
-        tk.Button(cbtns, text="Remove Class", width=12, command=self.remove_class).pack(side=tk.LEFT, padx=2)
+        ModernButton(cbtns, text="Add Class", width=110, command=self.add_class).pack(side=tk.LEFT, padx=2)
+        ModernButton(cbtns, text="Remove Class", width=110, command=self.remove_class).pack(side=tk.LEFT, padx=2)
 
     def _current_group_name(self):
         sel = self.group_list.curselection()
@@ -458,6 +969,8 @@ class LabelerApp:
             self.current_cls = self.classes[0] if self.classes else None
             self.mouse_pos = None
             self.label_history = []
+            self.rect_mode = False
+            self.rect_start = None
         else:
             self.staged = output_dir / "._staged"
             self.staged.mkdir(parents=True, exist_ok=True)
@@ -468,6 +981,17 @@ class LabelerApp:
         self._base_photo = None
         self._img_item = None
         self._staged_current = False
+        self.zoom = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
+        self._pan_origin = None
+        self._pan_start = (0, 0)
+        self._press_xy = None
+        self._press_pan = (0, 0)
+        self._panning = False
+        self._scaled_photo = None
+        self._scaled_scale = None
+        self.rect_btn = None
 
         self._build_ui()
         self._bind_keys()
@@ -496,36 +1020,109 @@ class LabelerApp:
     def _build_ui(self):
         self.root.title(f"Labeler - {self.mode} - group: {self.group_name}")
 
-        toolbar = tk.Frame(self.root)
-        toolbar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=6)
-        tk.Button(toolbar, text="Groups...", command=self.manage_groups).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="◀ Prev (←)", command=self.prev).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Next (→)", command=self.next_image).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Rotate (r)", command=self.rotate).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Skip (s)", command=self.skip).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Undo (u)", command=self.undo).pack(side=tk.LEFT, padx=2)
-        if self.mode == "yolo":
-            tk.Button(toolbar, text="Close Polygon (c)", command=self.close_polygon).pack(side=tk.LEFT, padx=2)
-            tk.Button(toolbar, text="Whole Image (w)", command=self.annotate_whole_image).pack(side=tk.LEFT, padx=2)
-            tk.Button(toolbar, text="Save & Next (Enter)", command=self.save_next).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Next Unlabeled (n)", command=self.next_unlabeled).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Quit (q)", command=self.quit).pack(side=tk.RIGHT, padx=2)
+        self._icons = build_icons(self.root, icon_color=(230, 233, 237))
+        self._icons_white = build_icons(self.root, icon_color=(255, 255, 255))
 
-        self.display = tk.Canvas(self.root, bg="black", highlightthickness=0)
+        # ---- sidebar ----
+        sidebar = tk.Frame(self.root, width=196, bg=UI["panel"])
+        sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar.pack_propagate(False)
+
+        brand = tk.Frame(sidebar, bg=UI["panel"])
+        brand.pack(fill=tk.X, padx=14, pady=(16, 10))
+        tk.Label(brand, text="Labeler", bg=UI["panel"], fg=UI["accent"],
+                 font=("TkDefaultFont", 17, "bold")).pack(anchor=tk.W)
+        tk.Label(brand, text=f"{self.mode}  ·  {self.group_name}", bg=UI["panel"],
+                 fg=UI["muted"], font=("TkDefaultFont", 9)).pack(anchor=tk.W, pady=(2, 0))
+        tk.Frame(sidebar, height=1, bg=UI["border"]).pack(fill=tk.X, padx=14, pady=8)
+
+        nav = tk.Frame(sidebar, bg=UI["panel"])
+        nav.pack(fill=tk.X, padx=12)
+
+        def navbtn(icon, tip, command, style="default"):
+            b = ModernButton(nav, command=command, icon=self._icons[icon],
+                             icon_active=self._icons_white[icon], tooltip=tip,
+                             style=style, height=36, parent_bg=UI["panel"])
+            b.pack(fill=tk.X, pady=3)
+            return b
+
+        navbtn("groups", "Manage class groups", self.manage_groups)
+        navbtn("next_unlabeled", "Next unlabeled image (n)", self.next_unlabeled)
+        navbtn("zoom_reset", "Reset zoom", self.reset_zoom)
+
+        tk.Frame(sidebar, bg=UI["panel"]).pack(fill=tk.BOTH, expand=True)
+        navbtn("quit", "Quit (q)", self.quit, style="danger")
+
+        # ---- main area ----
+        main = tk.Frame(self.root, bg=UI["bg"])
+        main.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # header
+        header = tk.Frame(main, bg=UI["panel"])
+        header.pack(side=tk.TOP, fill=tk.X)
+        hrow = tk.Frame(header, bg=UI["panel"])
+        hrow.pack(fill=tk.X, padx=14, pady=8)
+        mode_label = "YOLO Mode" if self.mode == "yolo" else "Classification Mode"
+        Pill(hrow, text=mode_label, parent_bg=UI["panel"]).pack(side=tk.LEFT)
+        tk.Label(hrow, text=f"Group: {self.group_name}", bg=UI["panel"], fg=UI["muted"]).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(hrow, text=f"Classes: {', '.join(self.classes)}", bg=UI["panel"], fg=UI["muted"]).pack(side=tk.LEFT, padx=(10, 0))
+        self.done_label = tk.Label(hrow, text="", bg=UI["panel"], fg=UI["muted"])
+        self.done_label.pack(side=tk.LEFT, padx=(16, 0))
+        tk.Label(hrow, text="Progress", bg=UI["panel"], fg=UI["muted"]).pack(side=tk.RIGHT, padx=(0, 8))
+        self.progress_label = tk.Label(hrow, text="", bg=UI["panel"], fg=UI["text"],
+                                       font=("TkDefaultFont", 10, "bold"), anchor=tk.E)
+        self.progress_label.pack(side=tk.RIGHT, padx=(12, 4))
+        self.progress_bar = ProgressBar(hrow, width=200, height=10, parent_bg=UI["panel"])
+        self.progress_bar.pack(side=tk.RIGHT, pady=4)
+        tk.Frame(header, height=1, bg=UI["border"]).pack(fill=tk.X)
+
+        # toolbar
+        toolbar = tk.Frame(main, bg=UI["bg"])
+        toolbar.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
+
+        def tbutton(icon, tip, command, side=tk.LEFT):
+            btn = ModernButton(toolbar, command=command, icon=self._icons[icon],
+                               icon_active=self._icons_white[icon], tooltip=tip, height=34)
+            btn.pack(side=side, padx=3)
+            return btn
+
+        tbutton("prev", "Previous image (Left)", self.prev)
+        tbutton("next", "Next image (Right)", self.next_image)
+        tbutton("rotate", "Rotate clockwise (r)", self.rotate)
+        tbutton("skip", "Skip image (s)", self.skip)
+        tbutton("undo", "Undo (u)", self.undo)
+        if self.mode == "yolo":
+            tbutton("polygon", "Close polygon (c)", self.close_polygon)
+            tbutton("whole", "Annotate whole image (w)", self.annotate_whole_image)
+            self.rect_btn = tbutton("rect", "Rectangle: 2 clicks (toggle)", self.toggle_rect_mode)
+            tbutton("save", "Save & next image (Enter)", self.save_next)
+        tbutton("next_unlabeled", "Next unlabeled image (n)", self.next_unlabeled)
+
+        self.display = tk.Canvas(main, bg=UI["canvas"], highlightthickness=0)
         self.display.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
         self.display.bind("<Configure>", lambda e: self._redraw_overlay())
-
+        self.display.bind("<MouseWheel>", self.on_wheel)
+        self.display.bind("<Button-4>", lambda e: self._zoom_around(e.x, e.y, 1.25))
+        self.display.bind("<Button-5>", lambda e: self._zoom_around(e.x, e.y, 0.8))
+        self.display.bind("<Button-2>", self.on_pan_start)
+        self.display.bind("<B2-Motion>", self.on_pan_move)
+        self.display.bind("<ButtonRelease-2>", self.on_pan_release)
+        self.display.bind("<Button-1>", self.on_button_press)
+        self.display.bind("<ButtonRelease-1>", self.on_button_release)
+        self.display.bind("<B1-Motion>", self.on_pan_left)
         if self.mode == "yolo":
-            self.display.bind("<Button-1>", self.on_click)
             self.display.bind("<Button-3>", self.on_close_polygon)
-            self.display.bind("<B1-Motion>", self.on_motion)
+            self.display.bind("<Motion>", self.on_hover)
 
-        self.class_bar = tk.Frame(self.root)
+        self.class_bar = tk.Frame(main, bg=UI["bg"])
         self._rebuild_class_bar()
 
-        self.status = tk.Label(self.root, anchor=tk.W, relief=tk.SUNKEN, bd=1)
+        self.status = tk.Label(main, anchor=tk.W, relief=tk.FLAT, bd=0, bg=UI["panel"],
+                               fg=UI["muted"], highlightthickness=1,
+                               highlightbackground=UI["border"])
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
-        self.class_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=6)
+        self.class_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
+        self._update_class_highlight()
 
     def _rebuild_class_bar(self):
         for w in self.class_bar.winfo_children():
@@ -533,9 +1130,9 @@ class LabelerApp:
         self.class_buttons = {}
         for cls in self.classes:
             key = self.class_keys[cls]
-            btn = tk.Button(self.class_bar, text=f"[{key}] {cls}", width=16,
-                            command=lambda c=cls: self._on_class_press(c))
-            btn.pack(side=tk.LEFT, padx=2)
+            btn = ModernButton(self.class_bar, text=cls, badge=key, height=40,
+                               command=lambda c=cls: self._on_class_press(c))
+            btn.pack(side=tk.LEFT, padx=4)
             self.class_buttons[cls] = btn
         self._update_class_highlight()
 
@@ -549,10 +1146,18 @@ class LabelerApp:
 
     def _update_class_highlight(self):
         for cls, btn in self.class_buttons.items():
-            if self.mode == "yolo" and cls == self.current_cls:
-                btn.configure(relief=tk.SUNKEN)
-            else:
-                btn.configure(relief=tk.RAISED)
+            self._set_highlight(btn, self.mode == "yolo" and cls == self.current_cls)
+        if self.rect_btn is not None:
+            self._set_highlight(self.rect_btn, getattr(self, "rect_mode", False))
+
+    def _set_highlight(self, btn, selected):
+        if hasattr(btn, "set_active"):
+            btn.set_active(selected)
+            return
+        btn.configure(bg=UI["accent"] if selected else UI["button"],
+                      fg=UI["accent_text"] if selected else UI["button_text"],
+                      activebackground=UI["accent_hover"] if selected else UI["button_hover"],
+                      activeforeground=UI["accent_text"] if selected else UI["button_text"])
 
     def _bind_keys(self):
         for key in self.keymap:
@@ -577,8 +1182,10 @@ class LabelerApp:
         parts = [f"[{key}] {self.keymap[key]}" for key in sorted(self.keymap)]
         parts.append("←/→: prev/next")
         if self.mode == "yolo":
-            parts.append("left: add point  right/click 1st point/c: close  w: whole image  "
+            parts.append("left click: add point  right/1st pt/c: close  w: whole image  "
                          "Bksp: remove  Esc: cancel  Enter: save&next")
+            parts.append("Rect: 2 clicks = rectangle")
+        parts.append("wheel: zoom  drag: pan")
         return "  ".join(parts)
 
     def _show_current(self):
@@ -601,11 +1208,16 @@ class LabelerApp:
                 return
         self.img = img
         self.rot = 0
+        self.zoom = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
         if self.mode == "yolo":
             self.polygons = []
             self.current = []
             self.mouse_pos = None
+            self.rect_start = None
             self._load_existing_polygons()
+            self._update_class_highlight()
         self._render()
 
     def _load_existing_polygons(self):
@@ -629,6 +1241,7 @@ class LabelerApp:
         self.lb_h, self.lb_w = lb.shape[:2]
         self._orig_dims = (self.img.shape[1], self.img.shape[0])
         self._base_bgr = rot_cw(lb, self.rot)
+        self._scaled_scale = None
         self._base_photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(self._base_bgr, cv2.COLOR_BGR2RGB)))
         self._photo = self._base_photo
         self._redraw_overlay()
@@ -637,10 +1250,10 @@ class LabelerApp:
         existing = self.existing.get(key)
         if existing:
             label_info = "annotated" if self.mode == "yolo" else f"label: {existing}"
-            self.status.configure(fg="#1a7f37")
+            self.status.configure(fg="#4ade80")
         else:
             label_info = "label: —"
-            self.status.configure(fg="#333333")
+            self.status.configure(fg=UI["muted"])
         if self.mode == "yolo":
             cls_info = f"class: {self.current_cls}  |  "
             extra = f"  |  {len(self.polygons)} poly, {len(self.current)} pts"
@@ -651,6 +1264,14 @@ class LabelerApp:
             f"({self.i + 1}/{len(self.files)})  {path.name}  |  {label_info}  |  "
             f"{cls_info}rotation {self.rot}  |  {self.n_done} done{extra}  |  {self._hint()}"
         ))
+        self._update_header()
+
+    def _update_header(self):
+        total = len(self.files)
+        idx = min(self.i + 1, total) if total else 0
+        self.progress_label.configure(text=f"{idx} / {total}")
+        self.progress_bar.set(idx / total if total else 0.0)
+        self.done_label.configure(text=f"{self.n_done} done")
 
     def _canvas_img_pos(self):
         if self._img_item is None:
@@ -669,16 +1290,27 @@ class LabelerApp:
         if cw <= 1 or ch <= 1:
             return
         dw, dh = disp_dims(self.lb_w, self.lb_h, self.rot)
-        self._disp_scale = min(1.0, cw / dw, ch / dh)
-        sw, sh = max(1, round(dw * self._disp_scale)), max(1, round(dh * self._disp_scale))
-        if self._disp_scale < 1.0:
+        fit = min(1.0, cw / dw, ch / dh)
+        self._scale = fit * self.zoom
+        sw, sh = max(1, round(dw * self._scale)), max(1, round(dh * self._scale))
+        if self._scaled_scale != self._scale:
             img = Image.fromarray(self._base_bgr).resize((sw, sh), Image.LANCZOS)
-            self._photo = ImageTk.PhotoImage(img)
-        else:
+            self._scaled_photo = ImageTk.PhotoImage(img)
+            self._scaled_scale = self._scale
+        if self.zoom <= 1.0 and self._scale >= 1.0:
             self._photo = self._base_photo
+        else:
+            self._photo = self._scaled_photo
         iw, ih = self._photo.width(), self._photo.height()
-        x0 = (cw - iw) // 2
-        y0 = (ch - ih) // 2
+        if iw < cw:
+            self._pan_x = (cw - iw) // 2
+        else:
+            self._pan_x = min(0, max(cw - iw, self._pan_x))
+        if ih < ch:
+            self._pan_y = (ch - ih) // 2
+        else:
+            self._pan_y = min(0, max(ch - ih, self._pan_y))
+        x0, y0 = self._pan_x, self._pan_y
         if self._img_item is None:
             self._img_item = c.create_image(0, 0, anchor="nw", image=self._photo)
         else:
@@ -687,7 +1319,7 @@ class LabelerApp:
         c.tag_lower(self._img_item)
         if self.mode != "yolo":
             return
-        scale = self._disp_scale
+        scale = self._scale
         lb_w, lb_h = self.lb_w, self.lb_h
         ow, oh = self._orig_dims
         for idx, poly in enumerate(self.polygons):
@@ -695,8 +1327,7 @@ class LabelerApp:
             tk_color = "#%02x%02x%02x" % (color[2], color[1], color[0])
             pts = [(x0 + dx, y0 + dy) for dx, dy in (
                 norm_to_disp(nx, ny, self.rot, lb_w, lb_h, ow, oh, scale) for nx, ny in poly["pts"])]
-            fill = "" if poly.get("whole") else tk_color
-            c.create_polygon(pts, outline=tk_color, width=2, fill=fill, stipple="gray50", tags="overlay")
+            c.create_polygon(pts, outline=tk_color, width=2, fill=tk_color, stipple="gray50", tags="overlay")
             if pts:
                 c.create_text(pts[0][0] + 8, pts[0][1] + 8, text=poly["cls"], fill=tk_color,
                               anchor="nw", font=("TkDefaultFont", 10, "bold"), tags="overlay")
@@ -713,6 +1344,14 @@ class LabelerApp:
                 line_pts = pts
             if len(line_pts) >= 2:
                 c.create_line(line_pts, fill=tk_color, width=2, tags="overlay")
+        if self.rect_mode and self.rect_start is not None and self.mouse_pos:
+            color = COLORS[self.classes.index(self.current_cls) % len(COLORS)] if self.current_cls else (255, 255, 255)
+            tk_color = "#%02x%02x%02x" % (color[2], color[1], color[0])
+            ax, ay = norm_to_disp(self.rect_start[0], self.rect_start[1], self.rot,
+                                  lb_w, lb_h, ow, oh, scale)
+            bx, by = self.mouse_pos
+            c.create_rectangle(x0 + ax, y0 + ay, x0 + bx, y0 + by,
+                               outline=tk_color, width=2, tags="overlay")
 
     def _event_to_disp(self, event):
         if self._base_photo is None:
@@ -723,8 +1362,7 @@ class LabelerApp:
         x0, y0, x1, y1 = bbox
         x = event.x - x0
         y = event.y - y0
-        dw, dh = disp_dims(self.lb_w, self.lb_h, self.rot)
-        sw, sh = round(dw * self._disp_scale), round(dh * self._disp_scale)
+        sw, sh = self._photo.width(), self._photo.height()
         if x < 0 or y < 0 or x > sw - 1 or y > sh - 1:
             return None
         return x, y
@@ -733,7 +1371,19 @@ class LabelerApp:
         p = self._event_to_disp(event)
         if p is None or self.current_cls is None:
             return
-        scale = self._disp_scale
+        scale = self._scale
+        if self.rect_mode:
+            nx, ny = disp_to_norm(p[0], p[1], self.rot, self.lb_w, self.lb_h, *self._orig_dims, scale)
+            if self.rect_start is None:
+                self.rect_start = (nx, ny)
+            else:
+                ax, ay = self.rect_start
+                self.polygons.append({"cls": self.current_cls,
+                                      "pts": [(ax, ay), (nx, ay), (nx, ny), (ax, ny)]})
+                self.rect_start = None
+            self.mouse_pos = p
+            self._redraw_overlay()
+            return
         if len(self.current) >= 3:
             fx, fy = norm_to_disp(self.current[0][0], self.current[0][1], self.rot,
                                   self.lb_w, self.lb_h, *self._orig_dims, scale)
@@ -745,11 +1395,102 @@ class LabelerApp:
         self.mouse_pos = p
         self._redraw_overlay()
 
-    def on_motion(self, event):
+    def on_button_press(self, event):
+        self._press_xy = (event.x, event.y)
+        self._press_pan = (self._pan_x, self._pan_y)
+        self._panning = False
+
+    def on_button_release(self, event):
+        panning = self._panning
+        self._press_xy = None
+        self._panning = False
+        self.display.config(cursor="")
+        if panning:
+            return
+        if self.mode == "yolo":
+            self.on_click(event)
+
+    def on_hover(self, event):
         p = self._event_to_disp(event)
         if p is None:
             return
         self.mouse_pos = p
+        self._redraw_overlay()
+
+    def on_pan_left(self, event):
+        if self._press_xy is None:
+            return
+        dx = event.x - self._press_xy[0]
+        dy = event.y - self._press_xy[1]
+        if not self._panning and dx * dx + dy * dy <= 36:
+            return
+        if not self._panning:
+            self._panning = True
+            self.display.config(cursor="hand2")
+            self.mouse_pos = None
+        self._pan_x = self._press_pan[0] + dx
+        self._pan_y = self._press_pan[1] + dy
+        self._redraw_overlay()
+
+    def on_wheel(self, event):
+        self._zoom_around(event.x, event.y, 1.25 if event.delta > 0 else 0.8)
+
+    def _zoom_around(self, mx, my, factor):
+        if self._base_photo is None:
+            return
+        new_zoom = min(20.0, max(1.0, self.zoom * factor))
+        if new_zoom == self.zoom:
+            return
+        if self._img_item is not None:
+            try:
+                x0, y0, _, _ = self.display.bbox(self._img_item)
+            except tk.TclError:
+                x0 = y0 = 0
+        else:
+            x0 = y0 = 0
+        dw, dh = disp_dims(self.lb_w, self.lb_h, self.rot)
+        cw, ch = self.display.winfo_width(), self.display.winfo_height()
+        fit = min(1.0, cw / dw, ch / dh)
+        old_s = fit * self.zoom
+        new_s = fit * new_zoom
+        if old_s <= 0:
+            return
+        ix = (mx - x0) / old_s
+        iy = (my - y0) / old_s
+        if self.mouse_pos is not None:
+            self.mouse_pos = (self.mouse_pos[0] * new_s / old_s, self.mouse_pos[1] * new_s / old_s)
+        self.zoom = new_zoom
+        self._pan_x = mx - ix * new_s
+        self._pan_y = my - iy * new_s
+        self._redraw_overlay()
+
+    def reset_zoom(self):
+        self.zoom = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
+        self._redraw_overlay()
+
+    def on_pan_start(self, event):
+        self._pan_origin = (event.x, event.y)
+        self._pan_start = (self._pan_x, self._pan_y)
+        self.display.config(cursor="hand2")
+
+    def on_pan_move(self, event):
+        if self._pan_origin is None:
+            return
+        self._pan_x = self._pan_start[0] + event.x - self._pan_origin[0]
+        self._pan_y = self._pan_start[1] + event.y - self._pan_origin[1]
+        self._redraw_overlay()
+
+    def on_pan_release(self, event):
+        self._pan_origin = None
+        self.display.config(cursor="")
+
+    def toggle_rect_mode(self):
+        self.rect_mode = not self.rect_mode
+        if not self.rect_mode:
+            self.rect_start = None
+        self._update_class_highlight()
         self._redraw_overlay()
 
     def close_polygon(self):
@@ -763,11 +1504,20 @@ class LabelerApp:
         self.close_polygon()
 
     def backspace_vertex(self):
-        if self.current:
+        if self.rect_start is not None:
+            self.rect_start = None
+            self._redraw_overlay()
+        elif self.current:
             self.current.pop()
             self._redraw_overlay()
 
     def cancel_polygon(self):
+        if self.rect_mode:
+            self.rect_mode = False
+            self.rect_start = None
+            self._update_class_highlight()
+            self._redraw_overlay()
+            return
         if self.current:
             self.current = []
             self.mouse_pos = None
@@ -780,8 +1530,7 @@ class LabelerApp:
             return
         self.current = []
         self.mouse_pos = None
-        self.polygons.append({"cls": self.current_cls, "whole": True,
-                              "pts": [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]})
+        self.polygons.append({"cls": self.current_cls, "pts": [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]})
         self._redraw_overlay()
 
     def save_next(self):
@@ -789,6 +1538,8 @@ class LabelerApp:
             return
         if self.current:
             self.close_polygon()
+        if self.rect_start is not None:
+            self.rect_start = None
         path = self.files[self.i]
         txt = self._write_txt(path)
         self.label_history.append((path, txt))
@@ -875,6 +1626,10 @@ class LabelerApp:
         self._show_current()
 
     def _undo_yolo(self):
+        if self.rect_start is not None:
+            self.rect_start = None
+            self._redraw_overlay()
+            return
         if self.current:
             self.current = []
             self.mouse_pos = None
@@ -975,6 +1730,8 @@ def main():
     config = load_config()
 
     root = tk.Tk()
+    root.configure(bg=UI["bg"])
+    setup_ttk(root)
     root.geometry("640x400")
     root.title("Labeler Setup")
 
